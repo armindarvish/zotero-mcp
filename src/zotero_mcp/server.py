@@ -1702,6 +1702,294 @@ def create_note(
 
 
 @mcp.tool(
+    name="zotero_create_collection",
+    description="Create a new collection in your Zotero library."
+)
+def create_collection(
+    name: str,
+    parent_collection: Optional[str] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a new collection in your Zotero library.
+
+    Args:
+        name: Name for the new collection
+        parent_collection: Optional parent collection key to create a subcollection
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new collection key
+    """
+    try:
+        if not name or not name.strip():
+            return "Error: Collection name cannot be empty"
+
+        ctx.info(f"Creating collection '{name}'{f' under parent {parent_collection}' if parent_collection else ''}")
+        zot = get_zotero_client()
+
+        # Verify parent collection exists if specified
+        if parent_collection:
+            try:
+                parent = zot.collection(parent_collection)
+                parent_name = parent["data"].get("name", "Unnamed Collection")
+                ctx.info(f"Parent collection verified: {parent_name}")
+            except Exception:
+                return f"Error: Parent collection not found with key: {parent_collection}"
+
+        # Prepare collection data
+        collection_data = {
+            "name": name.strip(),
+        }
+
+        # Add parent collection if specified
+        if parent_collection:
+            collection_data["parentCollection"] = parent_collection
+
+        # Create the collection
+        result = zot.create_collections([collection_data])
+
+        # Check if creation was successful
+        if "success" in result and result["success"]:
+            successful = result["success"]
+            if len(successful) > 0:
+                collection_key = next(iter(successful.keys()))
+                parent_info = f" as subcollection of '{parent_name}'" if parent_collection else ""
+                return f"Successfully created collection '{name}'{parent_info}\n\nCollection key: {collection_key}"
+            else:
+                return f"Collection creation response was successful but no key was returned: {result}"
+        else:
+            failed_info = result.get('failed', {})
+            error_msg = f"Failed to create collection: {failed_info}"
+            if isinstance(failed_info, dict):
+                for key, error in failed_info.items():
+                    error_msg = f"Failed to create collection: {error.get('message', error)}"
+            return error_msg
+
+    except Exception as e:
+        ctx.error(f"Error creating collection: {str(e)}")
+        return f"Error creating collection: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_item",
+    description="Create a new item (book, article, etc.) in your Zotero library."
+)
+def create_item(
+    item_type: str,
+    title: str,
+    creators: Optional[List[Dict[str, str]]] = None,
+    date: Optional[str] = None,
+    abstract: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    collections: Optional[List[str]] = None,
+    url: Optional[str] = None,
+    doi: Optional[str] = None,
+    isbn: Optional[str] = None,
+    publication_title: Optional[str] = None,
+    volume: Optional[str] = None,
+    issue: Optional[str] = None,
+    pages: Optional[str] = None,
+    publisher: Optional[str] = None,
+    place: Optional[str] = None,
+    edition: Optional[str] = None,
+    series: Optional[str] = None,
+    extra_fields: Optional[Dict[str, str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a new item in your Zotero library.
+
+    Args:
+        item_type: Type of item (e.g., "book", "journalArticle", "conferencePaper", "webpage", "thesis")
+        title: Title of the item
+        creators: List of creator dictionaries with 'creatorType', 'firstName', 'lastName'
+                 (or 'name' for single-field mode). Example: [{"creatorType": "author", "firstName": "John", "lastName": "Doe"}]
+        date: Publication date (flexible format)
+        abstract: Abstract or summary
+        tags: List of tags to apply
+        collections: List of collection keys to add the item to
+        url: URL for the item
+        doi: DOI identifier
+        isbn: ISBN (for books)
+        publication_title: Journal/publication name (for articles)
+        volume: Volume number
+        issue: Issue number
+        pages: Page range (e.g., "123-145")
+        publisher: Publisher name
+        place: Place of publication
+        edition: Edition (for books)
+        series: Series name
+        extra_fields: Dictionary of additional item-type-specific fields
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new item key
+    """
+    try:
+        if not title or not title.strip():
+            return "Error: Item title cannot be empty"
+
+        if not item_type or not item_type.strip():
+            return "Error: Item type cannot be empty"
+
+        ctx.info(f"Creating {item_type} item: '{title}'")
+        zot = get_zotero_client()
+
+        # Verify collections exist if specified
+        if collections:
+            for col_key in collections:
+                try:
+                    zot.collection(col_key)
+                except Exception:
+                    return f"Error: Collection not found with key: {col_key}"
+
+        # Build item data
+        item_data = {
+            "itemType": item_type.strip(),
+            "title": title.strip(),
+        }
+
+        # Add creators if provided
+        if creators:
+            item_data["creators"] = creators
+
+        # Add optional fields
+        if date:
+            item_data["date"] = date
+        if abstract:
+            item_data["abstractNote"] = abstract
+        if url:
+            item_data["url"] = url
+        if doi:
+            item_data["DOI"] = doi
+        if isbn:
+            item_data["ISBN"] = isbn
+        if publication_title:
+            item_data["publicationTitle"] = publication_title
+        if volume:
+            item_data["volume"] = volume
+        if issue:
+            item_data["issue"] = issue
+        if pages:
+            item_data["pages"] = pages
+        if publisher:
+            item_data["publisher"] = publisher
+        if place:
+            item_data["place"] = place
+        if edition:
+            item_data["edition"] = edition
+        if series:
+            item_data["series"] = series
+
+        # Add tags
+        if tags:
+            item_data["tags"] = [{"tag": tag} for tag in tags]
+
+        # Add collections
+        if collections:
+            item_data["collections"] = collections
+
+        # Add any extra fields
+        if extra_fields:
+            for key, value in extra_fields.items():
+                if key not in item_data:  # Don't override existing fields
+                    item_data[key] = value
+
+        # Create the item
+        result = zot.create_items([item_data])
+
+        # Check if creation was successful
+        if "success" in result and result["success"]:
+            successful = result["success"]
+            if len(successful) > 0:
+                item_key = next(iter(successful.keys()))
+                collection_info = f" in {len(collections)} collection(s)" if collections else ""
+                return f"Successfully created {item_type}: '{title}'{collection_info}\n\nItem key: {item_key}"
+            else:
+                return f"Item creation response was successful but no key was returned: {result}"
+        else:
+            failed_info = result.get('failed', {})
+            error_msg = f"Failed to create item: {failed_info}"
+            if isinstance(failed_info, dict):
+                for key, error in failed_info.items():
+                    if isinstance(error, dict):
+                        error_msg = f"Failed to create item: {error.get('message', error)}"
+                    else:
+                        error_msg = f"Failed to create item: {error}"
+            return error_msg
+
+    except Exception as e:
+        ctx.error(f"Error creating item: {str(e)}")
+        return f"Error creating item: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_items_to_collection",
+    description="Add existing items to a collection."
+)
+def add_items_to_collection(
+    collection_key: str,
+    item_keys: List[str],
+    *,
+    ctx: Context
+) -> str:
+    """
+    Add existing items to a collection.
+
+    Args:
+        collection_key: The collection key to add items to
+        item_keys: List of item keys to add to the collection
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        if not collection_key or not collection_key.strip():
+            return "Error: Collection key cannot be empty"
+
+        if not item_keys or len(item_keys) == 0:
+            return "Error: No item keys provided"
+
+        ctx.info(f"Adding {len(item_keys)} items to collection {collection_key}")
+        zot = get_zotero_client()
+
+        # Verify collection exists
+        try:
+            collection = zot.collection(collection_key)
+            collection_name = collection["data"].get("name", "Unnamed Collection")
+        except Exception:
+            return f"Error: Collection not found with key: {collection_key}"
+
+        # Verify all items exist
+        missing_items = []
+        for item_key in item_keys:
+            try:
+                zot.item(item_key)
+            except Exception:
+                missing_items.append(item_key)
+
+        if missing_items:
+            return f"Error: Items not found with keys: {', '.join(missing_items)}"
+
+        # Add items to collection
+        result = zot.addto_collection(collection_key, item_keys)
+
+        # Check result
+        if result:
+            return f"Successfully added {len(item_keys)} item(s) to collection '{collection_name}'"
+        else:
+            return f"Failed to add items to collection. Result: {result}"
+
+    except Exception as e:
+        ctx.error(f"Error adding items to collection: {str(e)}")
+        return f"Error adding items to collection: {str(e)}"
+
+
+@mcp.tool(
     name="zotero_semantic_search",
     description="Prioritized search tool. Perform semantic search over your Zotero library using AI-powered embeddings."
 )
