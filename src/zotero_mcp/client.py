@@ -30,10 +30,10 @@ class AttachmentDetails:
 def get_zotero_client() -> zotero.Zotero:
     """
     Get authenticated Zotero client using environment variables.
-    
+
     Returns:
         A configured Zotero client instance.
-        
+
     Raises:
         ValueError: If required environment variables are missing.
     """
@@ -59,6 +59,148 @@ def get_zotero_client() -> zotero.Zotero:
         api_key=api_key,
         local=local,
     )
+
+
+def check_write_permissions(zot: zotero.Zotero) -> Dict[str, Any]:
+    """
+    Check if the Zotero client has write permissions.
+
+    Args:
+        zot: A Zotero client instance.
+
+    Returns:
+        Dictionary with permission information:
+        - has_write_access: bool - Whether write access is available
+        - is_local: bool - Whether using local API
+        - permission_type: str - Type of access ("read-write", "read-only", "local", "unknown")
+        - message: str - Human-readable message about permissions
+        - checked_via: str - How permissions were determined
+    """
+    # Check if using local API
+    local = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
+
+    if local:
+        # Local API always has write access
+        return {
+            "has_write_access": True,
+            "is_local": True,
+            "permission_type": "local",
+            "message": "Local Zotero API - full read/write access",
+            "checked_via": "local_mode"
+        }
+
+    # For web API, check the key permissions
+    api_key = os.getenv("ZOTERO_API_KEY", "")
+
+    if not api_key:
+        return {
+            "has_write_access": False,
+            "is_local": False,
+            "permission_type": "unknown",
+            "message": "No API key provided - cannot determine permissions",
+            "checked_via": "no_api_key"
+        }
+
+    try:
+        # The Zotero API returns key permissions in the response headers
+        # We can check this by making a request and examining the Key-Access header
+        # Attempt to get user/group info which includes key permissions
+        library_type = os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+
+        # Make a minimal request to check permissions
+        # This uses the key_info() method if available, or falls back to a test request
+        try:
+            # Try to get key permissions directly
+            key_info = zot.key_info()
+
+            if key_info:
+                # Check the access level
+                access = key_info.get("access", {})
+
+                # Check if we have write access to the library
+                if library_type == "user":
+                    user_access = access.get("user", {})
+                    library_access = user_access.get("library", False)
+                    write_access = user_access.get("write", False)
+                else:  # group
+                    group_id = os.getenv("ZOTERO_LIBRARY_ID", "")
+                    groups_access = access.get("groups", {})
+                    group_access = groups_access.get(group_id, {})
+                    library_access = group_access.get("library", False)
+                    write_access = group_access.get("write", False)
+
+                has_write = library_access and write_access
+
+                return {
+                    "has_write_access": has_write,
+                    "is_local": False,
+                    "permission_type": "read-write" if has_write else "read-only",
+                    "message": f"Web API with {'read-write' if has_write else 'read-only'} access",
+                    "checked_via": "key_info_api",
+                    "key_info": key_info
+                }
+        except AttributeError:
+            # pyzotero might not have key_info method, fall back to test request
+            pass
+
+        # Fallback: Try to make a test write request (create then delete a tag)
+        # This is more invasive but works when key_info is not available
+        try:
+            # Try to get the library's tags (this tests read access)
+            zot.tags(limit=1)
+
+            # Unfortunately, without key_info, we can't reliably test write access
+            # without actually modifying something. We'll return a conservative result.
+            return {
+                "has_write_access": None,  # Unknown
+                "is_local": False,
+                "permission_type": "unknown",
+                "message": "Web API - write permissions could not be determined. Attempting write operations will reveal actual permissions.",
+                "checked_via": "read_test_only"
+            }
+
+        except Exception as test_error:
+            return {
+                "has_write_access": False,
+                "is_local": False,
+                "permission_type": "no_access",
+                "message": f"Cannot access library: {str(test_error)}",
+                "checked_via": "failed_test"
+            }
+
+    except Exception as e:
+        return {
+            "has_write_access": False,
+            "is_local": False,
+            "permission_type": "error",
+            "message": f"Error checking permissions: {str(e)}",
+            "checked_via": "error"
+        }
+
+
+def require_write_permissions(zot: zotero.Zotero) -> Optional[str]:
+    """
+    Check if the Zotero client has write permissions and return an error message if not.
+
+    Args:
+        zot: A Zotero client instance.
+
+    Returns:
+        None if write permissions are available, or an error message string if not.
+    """
+    permissions = check_write_permissions(zot)
+
+    # If we have confirmed write access, return None (no error)
+    if permissions["has_write_access"] is True:
+        return None
+
+    # If we explicitly don't have write access, return error
+    if permissions["has_write_access"] is False:
+        return f"Error: {permissions['message']}. Write operations are not permitted with current API key."
+
+    # If permission status is unknown (None), allow the operation to proceed
+    # The actual API call will fail if permissions are insufficient
+    return None
 
 
 def format_item_metadata(item: Dict[str, Any], include_abstract: bool = True) -> str:

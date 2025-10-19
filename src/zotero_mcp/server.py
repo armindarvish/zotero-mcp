@@ -18,11 +18,13 @@ from pathlib import Path
 from fastmcp import Context, FastMCP
 
 from zotero_mcp.client import (
+    check_write_permissions,
     convert_to_markdown,
     format_item_metadata,
     generate_bibtex,
     get_attachment_details,
     get_zotero_client,
+    require_write_permissions,
 )
 from zotero_mcp.utils import format_creators
 
@@ -823,7 +825,12 @@ def batch_update_tags(
         
         ctx.info(f"Batch updating tags for items matching '{query}'")
         zot = get_zotero_client()
-        
+
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
         if isinstance(limit, str):
             limit = int(limit)
         
@@ -1652,7 +1659,12 @@ def create_note(
     try:
         ctx.info(f"Creating note for item {item_key}")
         zot = get_zotero_client()
-        
+
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
         # First verify the parent item exists
         try:
             parent = zot.item(item_key)
@@ -1728,6 +1740,11 @@ def create_collection(
 
         ctx.info(f"Creating collection '{name}'{f' under parent {parent_collection}' if parent_collection else ''}")
         zot = get_zotero_client()
+
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
 
         # Verify parent collection exists if specified
         if parent_collection:
@@ -1837,6 +1854,11 @@ def create_item(
 
         ctx.info(f"Creating {item_type} item: '{title}'")
         zot = get_zotero_client()
+
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
 
         # Verify collections exist if specified
         if collections:
@@ -1957,6 +1979,11 @@ def add_items_to_collection(
         ctx.info(f"Adding {len(item_keys)} items to collection {collection_key}")
         zot = get_zotero_client()
 
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
         # Verify collection exists
         try:
             collection = zot.collection(collection_key)
@@ -1987,6 +2014,232 @@ def add_items_to_collection(
     except Exception as e:
         ctx.error(f"Error adding items to collection: {str(e)}")
         return f"Error adding items to collection: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_check_permissions",
+    description="Check API key permissions to determine if write operations are allowed."
+)
+def check_permissions(*, ctx: Context) -> str:
+    """
+    Check if the current Zotero connection has write permissions.
+
+    Args:
+        ctx: MCP context
+
+    Returns:
+        Formatted permissions information
+    """
+    try:
+        ctx.info("Checking Zotero API permissions...")
+        zot = get_zotero_client()
+
+        permissions = check_write_permissions(zot)
+
+        # Format response
+        output = ["# Zotero API Permissions", ""]
+        output.append(f"**Permission Type:** {permissions['permission_type']}")
+        output.append(f"**Has Write Access:** {permissions['has_write_access']}")
+        output.append(f"**Is Local API:** {permissions['is_local']}")
+        output.append(f"**Checked Via:** {permissions['checked_via']}")
+        output.append("")
+        output.append(f"**Message:** {permissions['message']}")
+
+        # Add additional details if available
+        if "key_info" in permissions:
+            output.append("")
+            output.append("## Detailed Key Information")
+            key_info = permissions["key_info"]
+
+            if "key" in key_info:
+                output.append(f"**Key:** {key_info['key'][:8]}... (truncated)")
+
+            if "userID" in key_info:
+                output.append(f"**User ID:** {key_info['userID']}")
+
+            if "username" in key_info:
+                output.append(f"**Username:** {key_info['username']}")
+
+            # Access details
+            if "access" in key_info:
+                access = key_info["access"]
+                output.append("")
+                output.append("### Access Permissions")
+
+                if "user" in access:
+                    user_access = access["user"]
+                    output.append(f"**User Library Access:** {user_access.get('library', False)}")
+                    output.append(f"**User Write Access:** {user_access.get('write', False)}")
+                    output.append(f"**User Notes Access:** {user_access.get('notes', False)}")
+
+                if "groups" in access:
+                    groups = access["groups"]
+                    if groups:
+                        output.append("")
+                        output.append("### Group Permissions")
+                        for group_id, group_access in groups.items():
+                            output.append(f"- **Group {group_id}:**")
+                            output.append(f"  - Library: {group_access.get('library', False)}")
+                            output.append(f"  - Write: {group_access.get('write', False)}")
+
+        return "\n".join(output)
+
+    except Exception as e:
+        ctx.error(f"Error checking permissions: {str(e)}")
+        return f"Error checking permissions: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_update_item",
+    description="Update metadata for an existing Zotero item. Allows updating any field(s) in the item."
+)
+def update_item(
+    item_key: str,
+    updates: Dict[str, Any],
+    *,
+    ctx: Context
+) -> str:
+    """
+    Update metadata for an existing Zotero item.
+
+    Args:
+        item_key: Zotero item key/ID to update
+        updates: Dictionary of field names and values to update.
+                Examples:
+                - {"title": "New Title"}
+                - {"abstractNote": "New abstract", "date": "2024"}
+                - {"creators": [{"creatorType": "author", "firstName": "John", "lastName": "Doe"}]}
+                - {"tags": [{"tag": "important"}, {"tag": "review"}]}
+                - {"url": "https://example.com", "DOI": "10.1234/example"}
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with updated fields
+    """
+    try:
+        if not item_key or not item_key.strip():
+            return "Error: Item key cannot be empty"
+
+        if not updates or not isinstance(updates, dict):
+            return "Error: Updates must be a non-empty dictionary of field names and values"
+
+        ctx.info(f"Updating item {item_key} with {len(updates)} field(s)")
+        zot = get_zotero_client()
+
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
+        # First, retrieve the existing item
+        try:
+            item = zot.item(item_key)
+            original_title = item["data"].get("title", "Untitled")
+            ctx.info(f"Retrieved item: {original_title}")
+        except Exception as e:
+            return f"Error: Item not found with key {item_key}: {str(e)}"
+
+        # Validate item type - cannot update attachments or notes this way
+        item_type = item["data"].get("itemType")
+        if item_type in ["attachment", "note"]:
+            return f"Error: Cannot update {item_type} items using this tool. Use specialized tools for notes and attachments."
+
+        # Store original values for reporting
+        original_values = {}
+        updated_fields = []
+
+        # Apply updates to the item data
+        for field, value in updates.items():
+            # Skip updating the item key itself
+            if field in ["key", "version", "dateAdded", "dateModified"]:
+                ctx.warn(f"Skipping read-only field: {field}")
+                continue
+
+            # Store original value if field exists
+            if field in item["data"]:
+                original_values[field] = item["data"][field]
+            else:
+                original_values[field] = None
+
+            # Update the field
+            item["data"][field] = value
+            updated_fields.append(field)
+            ctx.info(f"Updated field '{field}': {original_values[field]} -> {value}")
+
+        if not updated_fields:
+            return "No valid fields were updated. Check that you're not trying to update read-only fields."
+
+        # Attempt to update the item via Zotero API
+        try:
+            result = zot.update_item(item)
+            ctx.info(f"Update API result: {result}")
+
+            # Check if update was successful
+            if isinstance(result, dict):
+                if "success" in result and result["success"]:
+                    # Format success message
+                    response = [f"# Successfully Updated Item: {original_title}", ""]
+                    response.append(f"**Item Key:** {item_key}")
+                    response.append(f"**Updated Fields:** {len(updated_fields)}")
+                    response.append("")
+
+                    # List updated fields with before/after values
+                    response.append("## Changes Made:")
+                    for field in updated_fields:
+                        old_val = original_values.get(field)
+                        new_val = updates.get(field)
+
+                        # Format values for display
+                        if isinstance(old_val, list):
+                            old_display = f"[{len(old_val)} items]"
+                        elif isinstance(old_val, dict):
+                            old_display = "[dict]"
+                        elif old_val is None:
+                            old_display = "(not set)"
+                        else:
+                            old_display = str(old_val)[:100]
+
+                        if isinstance(new_val, list):
+                            new_display = f"[{len(new_val)} items]"
+                        elif isinstance(new_val, dict):
+                            new_display = "[dict]"
+                        else:
+                            new_display = str(new_val)[:100]
+
+                        response.append(f"- **{field}:**")
+                        response.append(f"  - Before: {old_display}")
+                        response.append(f"  - After: {new_display}")
+
+                    return "\n".join(response)
+
+                elif "failed" in result and result["failed"]:
+                    # Extract error details
+                    failed_info = result["failed"]
+                    error_msg = f"Failed to update item: {failed_info}"
+
+                    if isinstance(failed_info, dict):
+                        for key, error in failed_info.items():
+                            if isinstance(error, dict):
+                                error_msg = f"Failed to update item: {error.get('message', error)}"
+                            else:
+                                error_msg = f"Failed to update item: {error}"
+
+                    return error_msg
+
+            # If we get a boolean True, it means success
+            if result is True:
+                return f"Successfully updated {len(updated_fields)} field(s) for item: {original_title}\nItem key: {item_key}"
+
+            # Unknown response format
+            return f"Update completed with unexpected response: {result}"
+
+        except Exception as update_error:
+            ctx.error(f"API update failed: {str(update_error)}")
+            return f"Error updating item via API: {str(update_error)}"
+
+    except Exception as e:
+        ctx.error(f"Error in update_item: {str(e)}")
+        return f"Error updating item: {str(e)}"
 
 
 @mcp.tool(

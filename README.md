@@ -194,6 +194,8 @@ Example prompts:
 - **"Find papers conceptually similar to deep learning in computer vision"** *(semantic search)*
 - **"Research that relates to the intersection of AI and healthcare"** *(semantic search)*
 - **"Papers that discuss topics similar to this abstract: [paste text]"** *(semantic search)*
+- **"Update the title of item ABC123XY to 'New Title'"** *(update metadata)*
+- **"Change the abstract and add tags 'reviewed' and 'important' to item ABC123XY"** *(update metadata)*
 
 ### For Cherry Studio
 
@@ -315,6 +317,13 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_get_notes`: Retrieve notes from your Zotero library
 - `zotero_search_notes`: Search in notes and annotations (including PDF-extracted)
 - `zotero_create_note`: Create a new note for an item (beta feature)
+
+### ✏️ Item Management Tools
+- `zotero_create_collection`: Create a new collection
+- `zotero_create_item`: Create a new item (book, article, etc.)
+- `zotero_add_items_to_collection`: Add existing items to a collection
+- `zotero_update_item`: Update metadata for any field in an existing item
+- `zotero_batch_update_tags`: Batch update tags across multiple items
 
 ## 🔍 Troubleshooting
 
