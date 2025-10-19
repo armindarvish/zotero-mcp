@@ -1991,11 +1991,13 @@ def add_items_to_collection(
         except Exception:
             return f"Error: Collection not found with key: {collection_key}"
 
-        # Verify all items exist
+        # Verify all items exist and fetch them
         missing_items = []
+        items = []
         for item_key in item_keys:
             try:
-                zot.item(item_key)
+                item = zot.item(item_key)
+                items.append(item)
             except Exception:
                 missing_items.append(item_key)
 
@@ -2003,7 +2005,8 @@ def add_items_to_collection(
             return f"Error: Items not found with keys: {', '.join(missing_items)}"
 
         # Add items to collection
-        result = zot.addto_collection(collection_key, item_keys)
+        # Note: pyzotero's addto_collection expects item objects, not just keys
+        result = zot.addto_collection(collection_key, items)
 
         # Check result
         if result:
