@@ -2098,7 +2098,7 @@ def check_permissions(*, ctx: Context) -> str:
 )
 def update_item(
     item_key: str,
-    updates: Dict[str, Any],
+    updates: Dict[str, any],
     *,
     ctx: Context
 ) -> str:
