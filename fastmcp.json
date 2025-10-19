@@ -1,0 +1,16 @@
+{
+  "entrypoint": "src/zotero_mcp/server.py",
+  "environment": {
+    "dependencies": [
+      "pyzotero",
+      "mcp[cli]",
+      "python-dotenv",
+      "markitdown",
+      "fastmcp",
+      "chromadb",
+      "sentence-transformers",
+      "openai",
+      "google-genai"
+    ]
+  }
+}

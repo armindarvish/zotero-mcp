@@ -64,10 +64,9 @@ async def server_lifespan(server: FastMCP):
     sys.stderr.write("Shutting down Zotero MCP server...\n")
 
 
-# Create an MCP server with appropriate dependencies
+# Create an MCP server
 mcp = FastMCP(
     "Zotero",
-    dependencies=["pyzotero", "mcp[cli]", "python-dotenv", "markitdown", "fastmcp", "chromadb", "sentence-transformers", "openai", "google-genai"],
     lifespan=server_lifespan,
 )
 
@@ -2098,7 +2097,7 @@ def check_permissions(*, ctx: Context) -> str:
 )
 def update_item(
     item_key: str,
-    updates: Dict[str, any],
+    updates: dict,
     *,
     ctx: Context
 ) -> str:
