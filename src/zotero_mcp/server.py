@@ -1990,28 +1990,58 @@ def add_items_to_collection(
         except Exception:
             return f"Error: Collection not found with key: {collection_key}"
 
-        # Verify all items exist and fetch them
-        missing_items = []
-        items = []
+        # Process each item
+        successful_items = []
+        failed_items = []
+
         for item_key in item_keys:
             try:
+                # Get full item metadata
                 item = zot.item(item_key)
-                items.append(item)
-            except Exception:
-                missing_items.append(item_key)
+                if not item:
+                    failed_items.append(f"{item_key}: Item not found")
+                    continue
 
-        if missing_items:
-            return f"Error: Items not found with keys: {', '.join(missing_items)}"
+                # Get current collections list
+                current_collections = item["data"].get("collections", [])
 
-        # Add items to collection
-        # Note: pyzotero's addto_collection expects item objects, not just keys
-        result = zot.addto_collection(collection_key, items)
+                # Check if item is already in the collection
+                if collection_key in current_collections:
+                    ctx.info(f"Item {item_key} is already in collection {collection_key}")
+                    successful_items.append(item_key)
+                    continue
 
-        # Check result
-        if result:
-            return f"Successfully added {len(item_keys)} item(s) to collection '{collection_name}'"
-        else:
-            return f"Failed to add items to collection. Result: {result}"
+                # Append the new collection key
+                updated_collections = current_collections + [collection_key]
+
+                # Update the item with the new collections list
+                item["data"]["collections"] = updated_collections
+                result = zot.update_item(item)
+
+                # Check if update was successful
+                if result:
+                    successful_items.append(item_key)
+                    ctx.info(f"Successfully added item {item_key} to collection {collection_key}")
+                else:
+                    failed_items.append(f"{item_key}: Update returned {result}")
+
+            except Exception as e:
+                failed_items.append(f"{item_key}: {str(e)}")
+                ctx.error(f"Failed to add item {item_key} to collection: {str(e)}")
+
+        # Format response
+        response = []
+        if successful_items:
+            response.append(f"Successfully added {len(successful_items)} item(s) to collection '{collection_name}'")
+            if len(successful_items) <= 10:
+                response.append(f"Item keys: {', '.join(successful_items)}")
+
+        if failed_items:
+            response.append(f"\nFailed to add {len(failed_items)} item(s):")
+            for failure in failed_items:
+                response.append(f"  - {failure}")
+
+        return "\n".join(response) if response else "No items were processed"
 
     except Exception as e:
         ctx.error(f"Error adding items to collection: {str(e)}")
