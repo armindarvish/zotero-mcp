@@ -3120,7 +3120,6 @@ def update_item(
 
 
 @mcp.tool(
->>>>>>> main
     name="zotero_semantic_search",
     description="Prioritized search tool. Perform semantic search over your Zotero library using AI-powered embeddings."
 )
