@@ -19,6 +19,7 @@ from fastmcp import Context, FastMCP
 
 from zotero_mcp.client import (
     clear_active_library,
+    check_write_permissions,
     convert_to_markdown,
     format_item_metadata,
     generate_bibtex,
@@ -27,6 +28,7 @@ from zotero_mcp.client import (
     get_web_zotero_client,
     get_zotero_client,
     set_active_library,
+    require_write_permissions,
 )
 import requests
 
@@ -1184,6 +1186,11 @@ def batch_update_tags(
         ctx.info(f"Batch updating tags for items matching '{query}'")
         zot = get_zotero_client()
 
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
         if isinstance(limit, str):
             limit = int(limit)
 
@@ -2155,6 +2162,11 @@ def create_note(
         ctx.info(f"Creating note for item {item_key}")
         zot = get_zotero_client()
 
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
         # First verify the parent item exists
         try:
             parent = zot.item(item_key)
@@ -2546,6 +2558,569 @@ def create_annotation(
 
 
 @mcp.tool(
+    name="zotero_create_collection",
+    description="Create a new collection in your Zotero library."
+)
+def create_collection(
+    name: str,
+    parent_collection: Optional[str] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a new collection in your Zotero library.
+
+    Args:
+        name: Name for the new collection
+        parent_collection: Optional parent collection key to create a subcollection
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new collection key
+    """
+    try:
+        if not name or not name.strip():
+            return "Error: Collection name cannot be empty"
+
+        ctx.info(f"Creating collection '{name}'{f' under parent {parent_collection}' if parent_collection else ''}")
+        zot = get_zotero_client()
+
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
+        # Verify parent collection exists if specified
+        if parent_collection:
+            try:
+                parent = zot.collection(parent_collection)
+                parent_name = parent["data"].get("name", "Unnamed Collection")
+                ctx.info(f"Parent collection verified: {parent_name}")
+            except Exception:
+                return f"Error: Parent collection not found with key: {parent_collection}"
+
+        # Prepare collection data
+        collection_data = {
+            "name": name.strip(),
+        }
+
+        # Add parent collection if specified
+        if parent_collection:
+            collection_data["parentCollection"] = parent_collection
+
+        # Create the collection
+        result = zot.create_collections([collection_data])
+
+        # Check if creation was successful
+        if "success" in result and result["success"]:
+            successful = result["success"]
+            if len(successful) > 0:
+                collection_key = next(iter(successful.keys()))
+                parent_info = f" as subcollection of '{parent_name}'" if parent_collection else ""
+                return f"Successfully created collection '{name}'{parent_info}\n\nCollection key: {collection_key}"
+            else:
+                return f"Collection creation response was successful but no key was returned: {result}"
+        else:
+            failed_info = result.get('failed', {})
+            error_msg = f"Failed to create collection: {failed_info}"
+            if isinstance(failed_info, dict):
+                for key, error in failed_info.items():
+                    error_msg = f"Failed to create collection: {error.get('message', error)}"
+            return error_msg
+
+    except Exception as e:
+        ctx.error(f"Error creating collection: {str(e)}")
+        return f"Error creating collection: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_item",
+    description="Create a new item (book, article, etc.) in your Zotero library."
+)
+def create_item(
+    item_type: str,
+    title: str,
+    creators: Optional[List[Dict[str, str]]] = None,
+    date: Optional[str] = None,
+    abstract: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    collections: Optional[List[str]] = None,
+    url: Optional[str] = None,
+    doi: Optional[str] = None,
+    isbn: Optional[str] = None,
+    publication_title: Optional[str] = None,
+    volume: Optional[str] = None,
+    issue: Optional[str] = None,
+    pages: Optional[str] = None,
+    publisher: Optional[str] = None,
+    place: Optional[str] = None,
+    edition: Optional[str] = None,
+    series: Optional[str] = None,
+    extra_fields: Optional[Dict[str, str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a new item in your Zotero library.
+
+    Args:
+        item_type: Type of item (e.g., "book", "journalArticle", "conferencePaper", "webpage", "thesis")
+        title: Title of the item
+        creators: List of creator dictionaries with 'creatorType', 'firstName', 'lastName'
+                 (or 'name' for single-field mode). Example: [{"creatorType": "author", "firstName": "John", "lastName": "Doe"}]
+        date: Publication date (flexible format)
+        abstract: Abstract or summary
+        tags: List of tags to apply
+        collections: List of collection keys to add the item to
+        url: URL for the item
+        doi: DOI identifier
+        isbn: ISBN (for books)
+        publication_title: Journal/publication name (for articles)
+        volume: Volume number
+        issue: Issue number
+        pages: Page range (e.g., "123-145")
+        publisher: Publisher name
+        place: Place of publication
+        edition: Edition (for books)
+        series: Series name
+        extra_fields: Dictionary of additional item-type-specific fields
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new item key
+    """
+    try:
+        if not title or not title.strip():
+            return "Error: Item title cannot be empty"
+
+        if not item_type or not item_type.strip():
+            return "Error: Item type cannot be empty"
+
+        ctx.info(f"Creating {item_type} item: '{title}'")
+        zot = get_zotero_client()
+
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
+        # Verify collections exist if specified
+        if collections:
+            for col_key in collections:
+                try:
+                    zot.collection(col_key)
+                except Exception:
+                    return f"Error: Collection not found with key: {col_key}"
+
+        # Build item data
+        item_data = {
+            "itemType": item_type.strip(),
+            "title": title.strip(),
+        }
+
+        # Add creators if provided
+        if creators:
+            item_data["creators"] = creators
+
+        # Add optional fields
+        if date:
+            item_data["date"] = date
+        if abstract:
+            item_data["abstractNote"] = abstract
+        if url:
+            item_data["url"] = url
+        if doi:
+            item_data["DOI"] = doi
+        if isbn:
+            item_data["ISBN"] = isbn
+        if publication_title:
+            item_data["publicationTitle"] = publication_title
+        if volume:
+            item_data["volume"] = volume
+        if issue:
+            item_data["issue"] = issue
+        if pages:
+            item_data["pages"] = pages
+        if publisher:
+            item_data["publisher"] = publisher
+        if place:
+            item_data["place"] = place
+        if edition:
+            item_data["edition"] = edition
+        if series:
+            item_data["series"] = series
+
+        # Add tags
+        if tags:
+            item_data["tags"] = [{"tag": tag} for tag in tags]
+
+        # Add collections
+        if collections:
+            item_data["collections"] = collections
+
+        # Add any extra fields
+        if extra_fields:
+            for key, value in extra_fields.items():
+                if key not in item_data:  # Don't override existing fields
+                    item_data[key] = value
+
+        # Create the item
+        result = zot.create_items([item_data])
+
+        # Check if creation was successful
+        if "success" in result and result["success"]:
+            successful = result["success"]
+            if len(successful) > 0:
+                item_key = next(iter(successful.keys()))
+                collection_info = f" in {len(collections)} collection(s)" if collections else ""
+                return f"Successfully created {item_type}: '{title}'{collection_info}\n\nItem key: {item_key}"
+            else:
+                return f"Item creation response was successful but no key was returned: {result}"
+        else:
+            failed_info = result.get('failed', {})
+            error_msg = f"Failed to create item: {failed_info}"
+            if isinstance(failed_info, dict):
+                for key, error in failed_info.items():
+                    if isinstance(error, dict):
+                        error_msg = f"Failed to create item: {error.get('message', error)}"
+                    else:
+                        error_msg = f"Failed to create item: {error}"
+            return error_msg
+
+    except Exception as e:
+        ctx.error(f"Error creating item: {str(e)}")
+        return f"Error creating item: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_items_to_collection",
+    description="Add existing items to a collection."
+)
+def add_items_to_collection(
+    collection_key: str,
+    item_keys: List[str],
+    *,
+    ctx: Context
+) -> str:
+    """
+    Add existing items to a collection.
+
+    Args:
+        collection_key: The collection key to add items to
+        item_keys: List of item keys to add to the collection
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        if not collection_key or not collection_key.strip():
+            return "Error: Collection key cannot be empty"
+
+        if not item_keys or len(item_keys) == 0:
+            return "Error: No item keys provided"
+
+        ctx.info(f"Adding {len(item_keys)} items to collection {collection_key}")
+        zot = get_zotero_client()
+
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
+        # Verify collection exists
+        try:
+            collection = zot.collection(collection_key)
+            collection_name = collection["data"].get("name", "Unnamed Collection")
+        except Exception:
+            return f"Error: Collection not found with key: {collection_key}"
+
+        # Process each item
+        successful_items = []
+        failed_items = []
+
+        for item_key in item_keys:
+            try:
+                # Get full item metadata
+                item = zot.item(item_key)
+                if not item:
+                    failed_items.append(f"{item_key}: Item not found")
+                    continue
+
+                # Get current collections list
+                current_collections = item["data"].get("collections", [])
+
+                # Check if item is already in the collection
+                if collection_key in current_collections:
+                    ctx.info(f"Item {item_key} is already in collection {collection_key}")
+                    successful_items.append(item_key)
+                    continue
+
+                # Append the new collection key
+                updated_collections = current_collections + [collection_key]
+
+                # Update the item with the new collections list
+                item["data"]["collections"] = updated_collections
+                result = zot.update_item(item)
+
+                # Check if update was successful
+                if result:
+                    successful_items.append(item_key)
+                    ctx.info(f"Successfully added item {item_key} to collection {collection_key}")
+                else:
+                    failed_items.append(f"{item_key}: Update returned {result}")
+
+            except Exception as e:
+                failed_items.append(f"{item_key}: {str(e)}")
+                ctx.error(f"Failed to add item {item_key} to collection: {str(e)}")
+
+        # Format response
+        response = []
+        if successful_items:
+            response.append(f"Successfully added {len(successful_items)} item(s) to collection '{collection_name}'")
+            if len(successful_items) <= 10:
+                response.append(f"Item keys: {', '.join(successful_items)}")
+
+        if failed_items:
+            response.append(f"\nFailed to add {len(failed_items)} item(s):")
+            for failure in failed_items:
+                response.append(f"  - {failure}")
+
+        return "\n".join(response) if response else "No items were processed"
+
+    except Exception as e:
+        ctx.error(f"Error adding items to collection: {str(e)}")
+        return f"Error adding items to collection: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_check_permissions",
+    description="Check API key permissions to determine if write operations are allowed."
+)
+def check_permissions(*, ctx: Context) -> str:
+    """
+    Check if the current Zotero connection has write permissions.
+
+    Args:
+        ctx: MCP context
+
+    Returns:
+        Formatted permissions information
+    """
+    try:
+        ctx.info("Checking Zotero API permissions...")
+        zot = get_zotero_client()
+
+        permissions = check_write_permissions(zot)
+
+        # Format response
+        output = ["# Zotero API Permissions", ""]
+        output.append(f"**Permission Type:** {permissions['permission_type']}")
+        output.append(f"**Has Write Access:** {permissions['has_write_access']}")
+        output.append(f"**Is Local API:** {permissions['is_local']}")
+        output.append(f"**Checked Via:** {permissions['checked_via']}")
+        output.append("")
+        output.append(f"**Message:** {permissions['message']}")
+
+        # Add additional details if available
+        if "key_info" in permissions:
+            output.append("")
+            output.append("## Detailed Key Information")
+            key_info = permissions["key_info"]
+
+            if "key" in key_info:
+                output.append(f"**Key:** {key_info['key'][:8]}... (truncated)")
+
+            if "userID" in key_info:
+                output.append(f"**User ID:** {key_info['userID']}")
+
+            if "username" in key_info:
+                output.append(f"**Username:** {key_info['username']}")
+
+            # Access details
+            if "access" in key_info:
+                access = key_info["access"]
+                output.append("")
+                output.append("### Access Permissions")
+
+                if "user" in access:
+                    user_access = access["user"]
+                    output.append(f"**User Library Access:** {user_access.get('library', False)}")
+                    output.append(f"**User Write Access:** {user_access.get('write', False)}")
+                    output.append(f"**User Notes Access:** {user_access.get('notes', False)}")
+
+                if "groups" in access:
+                    groups = access["groups"]
+                    if groups:
+                        output.append("")
+                        output.append("### Group Permissions")
+                        for group_id, group_access in groups.items():
+                            output.append(f"- **Group {group_id}:**")
+                            output.append(f"  - Library: {group_access.get('library', False)}")
+                            output.append(f"  - Write: {group_access.get('write', False)}")
+
+        return "\n".join(output)
+
+    except Exception as e:
+        ctx.error(f"Error checking permissions: {str(e)}")
+        return f"Error checking permissions: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_update_item",
+    description="Update metadata for an existing Zotero item. Allows updating any field(s) in the item."
+)
+def update_item(
+    item_key: str,
+    updates: dict,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Update metadata for an existing Zotero item.
+
+    Args:
+        item_key: Zotero item key/ID to update
+        updates: Dictionary of field names and values to update.
+                Examples:
+                - {"title": "New Title"}
+                - {"abstractNote": "New abstract", "date": "2024"}
+                - {"creators": [{"creatorType": "author", "firstName": "John", "lastName": "Doe"}]}
+                - {"tags": [{"tag": "important"}, {"tag": "review"}]}
+                - {"url": "https://example.com", "DOI": "10.1234/example"}
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with updated fields
+    """
+    try:
+        if not item_key or not item_key.strip():
+            return "Error: Item key cannot be empty"
+
+        if not updates or not isinstance(updates, dict):
+            return "Error: Updates must be a non-empty dictionary of field names and values"
+
+        ctx.info(f"Updating item {item_key} with {len(updates)} field(s)")
+        zot = get_zotero_client()
+
+        # Check write permissions
+        perm_error = require_write_permissions(zot)
+        if perm_error:
+            return perm_error
+
+        # First, retrieve the existing item
+        try:
+            item = zot.item(item_key)
+            original_title = item["data"].get("title", "Untitled")
+            ctx.info(f"Retrieved item: {original_title}")
+        except Exception as e:
+            return f"Error: Item not found with key {item_key}: {str(e)}"
+
+        # Validate item type - cannot update attachments or notes this way
+        item_type = item["data"].get("itemType")
+        if item_type in ["attachment", "note"]:
+            return f"Error: Cannot update {item_type} items using this tool. Use specialized tools for notes and attachments."
+
+        # Store original values for reporting
+        original_values = {}
+        updated_fields = []
+
+        # Apply updates to the item data
+        for field, value in updates.items():
+            # Skip updating the item key itself
+            if field in ["key", "version", "dateAdded", "dateModified"]:
+                ctx.warn(f"Skipping read-only field: {field}")
+                continue
+
+            # Store original value if field exists
+            if field in item["data"]:
+                original_values[field] = item["data"][field]
+            else:
+                original_values[field] = None
+
+            # Update the field
+            item["data"][field] = value
+            updated_fields.append(field)
+            ctx.info(f"Updated field '{field}': {original_values[field]} -> {value}")
+
+        if not updated_fields:
+            return "No valid fields were updated. Check that you're not trying to update read-only fields."
+
+        # Attempt to update the item via Zotero API
+        try:
+            result = zot.update_item(item)
+            ctx.info(f"Update API result: {result}")
+
+            # Check if update was successful
+            if isinstance(result, dict):
+                if "success" in result and result["success"]:
+                    # Format success message
+                    response = [f"# Successfully Updated Item: {original_title}", ""]
+                    response.append(f"**Item Key:** {item_key}")
+                    response.append(f"**Updated Fields:** {len(updated_fields)}")
+                    response.append("")
+
+                    # List updated fields with before/after values
+                    response.append("## Changes Made:")
+                    for field in updated_fields:
+                        old_val = original_values.get(field)
+                        new_val = updates.get(field)
+
+                        # Format values for display
+                        if isinstance(old_val, list):
+                            old_display = f"[{len(old_val)} items]"
+                        elif isinstance(old_val, dict):
+                            old_display = "[dict]"
+                        elif old_val is None:
+                            old_display = "(not set)"
+                        else:
+                            old_display = str(old_val)[:100]
+
+                        if isinstance(new_val, list):
+                            new_display = f"[{len(new_val)} items]"
+                        elif isinstance(new_val, dict):
+                            new_display = "[dict]"
+                        else:
+                            new_display = str(new_val)[:100]
+
+                        response.append(f"- **{field}:**")
+                        response.append(f"  - Before: {old_display}")
+                        response.append(f"  - After: {new_display}")
+
+                    return "\n".join(response)
+
+                elif "failed" in result and result["failed"]:
+                    # Extract error details
+                    failed_info = result["failed"]
+                    error_msg = f"Failed to update item: {failed_info}"
+
+                    if isinstance(failed_info, dict):
+                        for key, error in failed_info.items():
+                            if isinstance(error, dict):
+                                error_msg = f"Failed to update item: {error.get('message', error)}"
+                            else:
+                                error_msg = f"Failed to update item: {error}"
+
+                    return error_msg
+
+            # If we get a boolean True, it means success
+            if result is True:
+                return f"Successfully updated {len(updated_fields)} field(s) for item: {original_title}\nItem key: {item_key}"
+
+            # Unknown response format
+            return f"Update completed with unexpected response: {result}"
+
+        except Exception as update_error:
+            ctx.error(f"API update failed: {str(update_error)}")
+            return f"Error updating item via API: {str(update_error)}"
+
+    except Exception as e:
+        ctx.error(f"Error in update_item: {str(e)}")
+        return f"Error updating item: {str(e)}"
+
+
+@mcp.tool(
+>>>>>>> main
     name="zotero_semantic_search",
     description="Prioritized search tool. Perform semantic search over your Zotero library using AI-powered embeddings."
 )
